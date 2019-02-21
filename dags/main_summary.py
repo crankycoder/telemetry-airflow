@@ -362,6 +362,22 @@ taar_similarity = MozDatabricksSubmitRunOperator(
     output_visibility="private",
     dag=dag)
 
+taar_ensemble_job = EMRSparkOperator(
+    task_id="taar_ensemble_job",
+    job_name="TAAR Ensemble Model",
+    owner="vng@mozilla.com",
+    email=["vng@mozilla.com", "mlopatka@mozilla.com"],
+    execution_timeout=timedelta(hours=11),
+    instance_count=30,
+    env=mozetl_envvar("taar_ensemble", {
+          "date": "{{ ds_nodash }}",
+          "bucket": "{{ task.__class__.private_output_bucket }}",
+          "prefix": "taar/locale/"
+    }),
+    uri="https://raw.githubusercontent.com/mozilla/python_mozetl/master/bin/mozetl-databricks.sh",
+    output_visibility="private",
+    dag=dag)
+
 main_summary_schema.set_upstream(main_summary)
 
 engagement_ratio.set_upstream(main_summary)
@@ -392,3 +408,5 @@ desktop_dau.set_upstream(client_count_daily_view)
 main_summary_glue.set_upstream(main_summary)
 
 taar_locale_job.set_upstream(clients_daily_v6)
+
+taar_ensemble.set_upstream(taar_similarity)
