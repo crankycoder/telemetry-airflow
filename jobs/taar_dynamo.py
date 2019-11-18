@@ -36,6 +36,8 @@ from boto3.dynamodb.types import Binary as DynamoBinary
 import time
 import zlib
 
+PATCH_DAYS = timedelta(days=7)
+
 # We use the os and threading modules to generate a spark worker
 # specific identity:w
 
@@ -384,7 +386,7 @@ def main(date, aws_access_key_id, aws_secret_access_key, region, table, sample_r
     APP_NAME = "TaarDynamo"
     conf = SparkConf().setAppName(APP_NAME)
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
-    date_obj = datetime.strptime(date, "%Y%m%d") - timedelta(days=3)
+    date_obj = datetime.strptime(date, "%Y%m%d") - PATCH_DAYS
 
     reduction_output = run_etljob(spark, date_obj, region, table, sample_rate)
     pprint(reduction_output)
