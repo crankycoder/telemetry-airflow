@@ -36,7 +36,7 @@ from boto3.dynamodb.types import Binary as DynamoBinary
 import time
 import zlib
 
-PATCH_DAYS = timedelta(days=7)
+PATCH_DAYS = timedelta(days=2)
 
 # We use the os and threading modules to generate a spark worker
 # specific identity:w
@@ -123,7 +123,13 @@ def list_transformer(row_jsonstr):
 
 
 class DynamoReducer(object):
-    def __init__(self, region_name=None, table_name=None):
+    def __init__(
+        self,
+        region_name=None,
+        table_name=None,
+        aws_access_key_id=None,
+        aws_secret_access_key=None,
+    ):
 
         if region_name is None:
             region_name = "us-west-2"
@@ -133,6 +139,9 @@ class DynamoReducer(object):
 
         self._region_name = region_name
         self._table_name = table_name
+
+        self._aws_access_key_id = aws_access_key_id
+        self._aws_secret_access_key = aws_secret_access_key
 
     def hash_client_ids(self, data_tuple):
         """
@@ -171,6 +180,10 @@ class DynamoReducer(object):
             for item in data_tuple[2]
         ]
 
+        # Clobber the enviroment variables for boto3 just prior to
+        # making the dynamodb connection
+        os.environ["AWS_ACCESS_KEY_ID"] = self._aws_access_key_id
+        os.environ["AWS_SECRET_ACCESS_KEY"] = self._aws_secret_access_key
         # Obtain credentials from the singleton
         conn = boto3.resource("dynamodb", region_name=self._region_name)
 
@@ -179,13 +192,14 @@ class DynamoReducer(object):
             with table.batch_writer(overwrite_by_pkeys=["client_id"]) as batch:
                 for item in item_list:
                     batch.put_item(Item=item)
+            print("Wrote {:d} items to dynamo.".format(len(item_list)))
             return []
         except Exception:
             # Something went wrong with the batch write write.
-            if len(data_tuple[3]) == 50:
+            if len(data_tuple[3]) >= 50:
                 # Too many errors already accumulated, just short circuit
                 # and return
-                return []
+                raise
             try:
                 error_accum = []
                 conn = boto3.resource("dynamodb", region_name=self._region_name)
@@ -193,13 +207,15 @@ class DynamoReducer(object):
                 for item in item_list:
                     try:
                         table.put_item(Item=item)
-                    except Exception:
+                    except Exception as e:
+                        print("Captured error: {:s}".format(e))
                         error_accum.append(item)
                 return error_accum
-            except Exception:
+            except Exception as exc:
                 # Something went wrong with the entire DynamoDB
                 # connection. Just return the entire list of
                 # JSON items
+                print("DynamoDB failure: {:s}".format(exc))
                 return item_list
 
     def dynamo_reducer(self, list_a, list_b, force_write=False):
@@ -223,6 +239,7 @@ class DynamoReducer(object):
                 new_list[3].extend(error_blobs[: 50 - new_list[1]])
                 # Zero out the number of accumulated records
                 new_list[1] = 0
+                print("Captured {:d} errors".format(len(error_blobs)))
             else:
                 # No errors during write process
                 # Update number of records written to dynamo
@@ -235,7 +252,15 @@ class DynamoReducer(object):
         return tuple(new_list)
 
 
-def etl(spark, run_date, region_name, table_name, sample_rate):
+def etl(
+    spark,
+    run_date,
+    region_name,
+    table_name,
+    sample_rate,
+    aws_access_key_id,
+    aws_secret_access_key,
+):
     """
     This function is responsible for extract, transform and load.
 
@@ -248,7 +273,10 @@ def etl(spark, run_date, region_name, table_name, sample_rate):
     """
 
     rdd = extract_transform(spark, run_date, sample_rate)
-    result = load_rdd(region_name, table_name, rdd)
+
+    result = load_rdd(
+        region_name, table_name, rdd, aws_access_key_id, aws_secret_access_key
+    )
     return result
 
 
@@ -344,9 +372,11 @@ def extract_transform(spark, run_date, sample_rate=0):
     return merged_filtered_rdd
 
 
-def load_rdd(region_name, table_name, rdd):
+def load_rdd(region_name, table_name, rdd, aws_access_key_id, aws_secret_access_key):
     # Apply a MapReduce operation to the RDD
-    dynReducer = DynamoReducer(region_name, table_name)
+    dynReducer = DynamoReducer(
+        region_name, table_name, aws_access_key_id, aws_secret_access_key
+    )
 
     reduction_output = rdd.reduce(dynReducer.dynamo_reducer)
     print("1st pass dynamo reduction completed")
@@ -359,8 +389,25 @@ def load_rdd(region_name, table_name, rdd):
     return final_reduction_output
 
 
-def run_etljob(spark, run_date, region_name, table_name, sample_rate):
-    reduction_output = etl(spark, run_date, region_name, table_name, sample_rate)
+def run_etljob(
+    spark,
+    run_date,
+    region_name,
+    table_name,
+    sample_rate,
+    aws_access_key_id,
+    aws_secret_access_key,
+):
+
+    reduction_output = etl(
+        spark,
+        run_date,
+        region_name,
+        table_name,
+        sample_rate,
+        aws_access_key_id,
+        aws_secret_access_key,
+    )
     report_data = (reduction_output[0], reduction_output[1])
     print("=" * 40)
     print(
@@ -368,6 +415,45 @@ def run_etljob(spark, run_date, region_name, table_name, sample_rate):
     )
     print("=" * 40)
     return reduction_output
+
+
+class DynamoProxy:
+    """
+    This class tests to make sure we can read
+    """
+
+    def __init__(self, region, table):
+        self._conn = boto3.resource("dynamodb", region_name=region)
+        self._table = self._conn.Table(table)
+
+    def scan_page(self):
+        response = self._table.scan()
+        for item in response["Items"]:
+            compressed_bytes = item["json_payload"].value
+            json_byte_data = zlib.decompress(compressed_bytes)
+            json_str_data = json_byte_data.decode("utf8")
+            yield json.loads(json_str_data)
+
+    def check_sentinel(self):
+        client_id = "write_sentinel"
+        response = self._table.get_item(Key={"client_id": client_id})
+        compressed_bytes = response["Item"]["json_payload"].value
+        json_byte_data = zlib.decompress(compressed_bytes)
+        json_str_data = json_byte_data.decode("utf8")
+        return json.loads(json_str_data)
+
+    def inject_record(self):
+        with self._table.batch_writer(overwrite_by_pkeys=["client_id"]) as batch:
+            item = {"update_time": datetime.datetime.now().isoformat()}
+            print("Writing: {}".format(item["update_time"]))
+            payload = zlib.compress(
+                json.dumps(item, default=json_serial).encode("utf8")
+            )
+            item = {"client_id": "write_sentinel", "json_payload": payload}
+            batch.put_item(Item=item)
+
+    def item_count(self):
+        print("Approximate row count: {:d}".format(self._table.item_count))
 
 
 @click.command()
@@ -388,7 +474,15 @@ def main(date, aws_access_key_id, aws_secret_access_key, region, table, sample_r
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
     date_obj = datetime.strptime(date, "%Y%m%d") - PATCH_DAYS
 
-    reduction_output = run_etljob(spark, date_obj, region, table, sample_rate)
+    reduction_output = run_etljob(
+        spark,
+        date_obj,
+        region,
+        table,
+        sample_rate,
+        aws_access_key_id,
+        aws_secret_access_key,
+    )
     pprint(reduction_output)
 
 

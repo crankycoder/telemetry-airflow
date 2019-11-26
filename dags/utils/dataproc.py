@@ -34,7 +34,12 @@ class DataProcHelper:
                  optional_components=['ANACONDA'],
                  install_component_gateway=True,
                  aws_conn_id=None,
-                 gcp_conn_id='google_cloud_airflow_dataproc'):
+                 gcp_conn_id='google_cloud_airflow_dataproc',
+                 master_disk_type=None,
+                 master_disk_size=None,
+                 worker_disk_type=None,
+                 worker_disk_size=None,
+                 ):
 
         self.cluster_name = cluster_name
         self.num_workers = num_workers
@@ -69,6 +74,11 @@ class DataProcHelper:
         self.aws_conn_id = aws_conn_id
         self.gcp_conn_id = gcp_conn_id
 
+        self.master_disk_type = master_disk_type
+        self.master_disk_size = master_disk_size
+        self.worker_disk_type = worker_disk_type
+        self.worker_disk_size = worker_disk_size
+
         self.connection = GoogleCloudBaseHook(gcp_conn_id=self.gcp_conn_id)
 
     def create_cluster(self):
@@ -102,6 +112,16 @@ class DataProcHelper:
             }
         metadata.update(self.additional_metadata)
 
+        # Set the disk parameter arguments if they've been overridden
+        # from the default None values
+        extra_kwargs = {}
+        disk_params = ['master_disk_type', 'master_disk_size', 'worker_disk_type', 'worker_disk_size',]
+        for param in disk_params:
+            param_val = getattr(self, param, None)
+            if param_val is not None:
+                extra_kwargs[param] = param_val
+
+
         return DataprocClusterCreateOperator(
             task_id='create_dataproc_cluster',
             cluster_name=self.cluster_name,
@@ -122,6 +142,7 @@ class DataProcHelper:
             install_component_gateway = self.install_component_gateway,
             init_actions_uris=self.init_actions_uris,
             metadata=metadata,
+            **extra_kwargs
         )
 
     def delete_cluster(self):
@@ -157,7 +178,12 @@ def moz_dataproc_pyspark_runner(parent_dag_name=None,
                                 py_args=None,
                                 job_name=None,
                                 aws_conn_id=None,
-                                gcp_conn_id='google_cloud_airflow_dataproc'):
+                                gcp_conn_id='google_cloud_airflow_dataproc',
+                                master_disk_type=None,
+                                master_disk_size=None,
+                                worker_disk_type=None,
+                                worker_disk_size=None,
+                                ):
 
     """
     This will initially create a GCP Dataproc cluster with Anaconda/Jupyter/Component gateway.
@@ -217,6 +243,19 @@ def moz_dataproc_pyspark_runner(parent_dag_name=None,
 
     :param str aws_conn_id:               Airflow connection id for S3 access (if needed).
     :param str gcp_conn_id:               The connection ID to use connecting to GCP. 
+    :param master_disk_type:              Type of the boot disk for the master node
+                                          (default is ``pd-standard``).
+                                          Valid values: ``pd-ssd`` (Persistent Disk Solid State Drive) or
+                                          ``pd-standard`` (Persistent Disk Hard Disk Drive).
+    :type master_disk_type:               str
+    :param master_disk_size:              Disk size for the master node
+    :param worker_disk_type:              Type of the boot disk for the worker node
+                                          (default is ``pd-standard``).
+                                          Valid values: ``pd-ssd`` (Persistent Disk Solid State Drive) or
+                                          ``pd-standard`` (Persistent Disk Hard Disk Drive).
+    :type worker_disk_type:               str
+    :param worker_disk_size:              Disk size for the worker nodes
+    :type worker_disk_size:               int
     :param list optional_components:      List of optional components to install on cluster
                                           Defaults to ['ANACONDA'] for now since JUPYTER is broken.
     :param str install_component_gateway: Enable alpha feature component gateway.
@@ -248,7 +287,12 @@ def moz_dataproc_pyspark_runner(parent_dag_name=None,
                                      additional_properties=additional_properties,
                                      install_component_gateway=install_component_gateway,
                                      aws_conn_id=aws_conn_id,
-                                     gcp_conn_id=gcp_conn_id)
+                                     gcp_conn_id=gcp_conn_id,
+                                     master_disk_type=master_disk_type,
+                                     master_disk_size=master_disk_size,
+                                     worker_disk_type=worker_disk_type,
+                                     worker_disk_size=worker_disk_size,
+                                     )
 
     _dag_name = '{}.{}'.format(parent_dag_name, dag_name)
 
