@@ -332,7 +332,7 @@ taar_locale_job = SubDagOperator(
             "--aws_secret_access_key",
             taar_aws_secret_key,
             "--bucket",
-            "telemetry-private-analysis-2",
+            "net-mozaws-data-us-west-2-taar",
             "--prefix",
             "taar/locale/",
         ],
