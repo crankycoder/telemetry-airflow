@@ -32,8 +32,7 @@ default_args = {
     "email": ["telemetry-alerts@mozilla.com", "amiyaguchi@mozilla.com", "vng@mozilla.com"],
     "email_on_failure": True,
     "email_on_retry": True,
-    "retries": 3,
-    "retry_delay": timedelta(minutes=30),
+    "retries": 0,
 }
 
 dag = DAG("taar_daily", default_args=default_args, schedule_interval="0 1 * * *")
@@ -110,6 +109,7 @@ taar_dynamo_job = SubDagOperator(
         job_name="TAAR_Dynamo",
         python_driver_code="gs://moz-fx-data-prod-airflow-dataproc-artifacts/jobs/taar_dynamo.py",
         num_workers=12,
+        auto_delete_ttl='43200',
         py_args=[
             "--date",
             "{{ ds_nodash }}",
